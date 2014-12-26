@@ -1,0 +1,553 @@
+编程规则和约定
+目录
+
+
+摘要：
+     这是一个描述如何利用Erlang进行系统编程的规则和建议文档。
+Note：这个文档是初步的文档，并不是完全正确的。
+     对于EBC的基础系统的要求不在这个文档，但是如果系统是已经被使用的，就必须遵循以前的设计。这个要求在文档1/10268-AND 10406 Uen "MAP - Start and Error Recovery".
+
+目标：
+     这个文档列出了许多关于在用Erlang设计、编写软件时应该考虑的方面。这并不是想要给通用系统设计和编写一个完全准确的描述，它们之间是独立的。
+
+一 ，结构和Erlang术语
+     Erlang系统是分散在各个模块当中的。模块由函数和属性组成。函数只有在本模块可见，除非他们被exported，这样，它们就可以被其他模块的函数调用。属性以“-”开头，并放在模块的开头部分。
+     由Erlang设计的系统的工作都由进程完成。一个进程就是一个能调用在多个模块中的函数的任务。进程之间交流利用发送消息。进程可以收到发送给他们的消息，并且可以决定哪个消息已经准备好可以被接受。其他消息被排成队列直到接收进程已经准备好接收它们。
+     进程可以通过 link 来监视一个进程是否退出。当被 link 的进程退出时，会发送一个 exit signal 给链接的进程。默认的动作是接收到退出信号的进程终结并且传播这个信号给其他链接的进程。进程可以改变默认的动作利用 捕获 退出，这会导致所有发送给进程的退出信号变成消息。
+     一个纯净的函数是当调用这个函数时函数返回的是同样的参数值内容。这就是我们通常希望的数学函数。一个函数不纯净就是有其他的边缘影响。
+     边缘影响就是在一个函数中a）发送消息 b）接收消息 c）调用exit d）调用任何能改变进程环境或Mod执行环境的BIF函数（例如： get/1，put/2，erase/1，process_flag/2）。
+警告：这个文档包含不好的代码的例子。
+
+二，软件工程的原则
+1，在一个模块中，尽量减少需要export的函数；
+     提供适当的export函数有利于理解该模块，过多的export函数不利于理解模块。
+     另外，在修改内部模块时应当设计保持接口的不变。
+2，减少模块之间的联系
+     当一个模块改变时，我们需要修改调用该模块的模块，这样如果模块之间的联系太过复杂就会造成修改的难度。
+3，把常用的代码放到库中
+     把常用的代码放进一个库中，这个库应该是互相关联并且是同个类型的函数。一个库只包含功能列表的清单是个好的做法，但是包含功能列表的函数和操作的数学函数是个不好的做法。
+     这个库最好没有其他边缘影响，这样有利于它的重用。
+4，隔离复杂的或者脏的代码到一个独立的模块中
+     脏的代码是代码做了以下这些事。例如
+     a）使用进程字典
+     b）因为奇怪的目的使用 Erlang：process_info/1 函数
+     c）做了一些不应该做的但是不得不做的事
+5，不要去假设调用函数的调用者会用结果来做什么
+     不要去假设为什么一个函数会被调用或者调用者希望对结果做些什么。
+     例如，假设我们调用一个有确定参数的程序，但他不是有效的。当参数是无效的时，这个程序的实施者不应该假设调用它的函数希望发生什么。
+     错误的示范：
+          do_something(Args) -> 
+  case check_args(Args) of 
+    ok -> 
+      {ok, do_it(Args)}; 
+    {error, What} -> 
+      String = format_the_error(What), 
+      io:format("* error:~s\n", [String]), %% Don't do this
+      error 
+  end.
+
+     正确做法：
+     do_something(Args) ->
+  case check_args(Args) of
+    ok ->
+      {ok, do_it(Args)};
+    {error, What} ->
+      {error, What}
+  end.
+
+error_report({error, What}) ->
+  format_the_error(What).
+     前面的例子总是将错误信息打印出来，但是后面的例子调用者可以自己决定用这错误信息做什么。
+
+6，抽象出代码或者行为的公共模式
+     将代码中在不同位置中相同的代码联系起来，并封装成一个函数。减少使用 复制 和 剪切 ，利用函数。
+7，自上而下
+     用自上而下的方式编写程序，不要自下而上（以细节开始）。
+     自上而下是个好的方法用来接近实施细节的设计，最后定义原始的函数。直到上一层的代码被设计，否则代码是各自独立的。
+8，不要优化你的代码
+     不要在第一步就开始优化你的代码，第一要使它正确然后才尽量让它更快。
+9，减少惊喜
+     当用户做一些事时，用户应该能预测会发生什么而不应该被结果所震惊。
+10，试着减少边缘影响
+     Erlang有很多有边缘影响的原语。使用这些原语的函数应该确切知道它们执行前的状态，由于它们也许会改变进程的运行环境，所以调用这些原语的函数会有重用的难度。
+11，不要让私有的数据结构 泄漏到模块外面去
+     看一下例子：
+     -module(queue).
+-export([add/2, fetch/1]).
+
+add(Item, Q) -> 
+  lists:append(Q, [Item]).
+
+fetch([H|T]) -> 
+  {ok, H, T}; 
+fetch([]) -> 
+  empty.
+
+     这里使用列表实现一个队列，不幸的是要使用这个用户必须知道队列是代表一个列表，可能会产生如下使用：
+NewQ = [], % Don't do this
+Queue1 = queue:add(joe, NewQ), 
+Queue2 = queue:add(mike, Queue1), ....
+
+
+     这是一个很不好的用法，因为 a）用户有必须知道队列是用列表来实现的 b）这使得实现无法改变内部的表示。更好的做法如下：
+-module(queue).
+-export([new/0, add/2, fetch/1]).
+
+new() -> 
+  [].
+
+add(Item, Q) -> 
+  lists:append(Q, [Item]).
+
+fetch([H|T]) -> 
+  {ok, H, T}; 
+fetch([]) -> 
+  empty.
+
+Now we can write:
+NewQ = queue:new(), 
+Queue1 = queue:add(joe, NewQ), 
+Queue2 = queue:add(mike, Queue1), ...
+
+     现在我们想要知道这个队列的长度，他们也许会尝试这样做：
+  Len = length(Queue) % Don't do this
+
+     这个只有他们知道队列用列表来实现的，这又回到了之前的问题，这样难以维护和理解。我们试着编写如下模块：
+-module(queue).
+-export([new/0, add/2, fetch/1, len/1]).
+
+new() -> [].
+
+add(Item, Q) ->
+  lists:append(Q, [Item]).
+
+fetch([H|T]) -> 
+  {ok, H, T}; 
+
+fetch([]) -> 
+  empty.
+
+len(Q) -> 
+  length(Q).
+
+     现在用户可以调用 queue：len（Queue）来代替了。
+     这样我们就可以说已经抽象出了所有关于队列的细节。为什么我们要这么做呢，这样我们就可以改变模块的实现而不需要改变调用这些模块的模块。如下面这个更好的实现队列的例子：
+-module(queue).
+-export([new/0, add/2, fetch/1, len/1]).
+
+new() -> 
+  {[],[]}.
+
+add(Item, {X,Y}) -> % Faster addition of elements
+  {[Item|X], Y}.
+
+fetch({X, [H|T]}) -> 
+  {ok, H, {X,T}}; 
+
+fetch({[], []) -> 
+  empty; 
+
+fetch({X, []) -> 
+  % Perform this heavy computation only sometimes.
+  fetch({[],lists:reverse(X)}).
+
+len({X,Y}) -> 
+  length(X) + length(Y).
+
+12，使代码尽可能保持确定性
+     一个确定性的程序总是能按一样的方式运行，无论调用这个程序运行多少次。一个不确定性的程序每次运行时也许会产生不同的结果这个做法有利于调试，有助于出现的错误可以重新产生并定位它。
+     例如，我们可以在一个进程中运行5个并行的进程，然后查看他们是否运行正确，进一步的我们不在乎他们哪个正确运行。
+     我们当然可以选择一次性运行5个并行进程然后查看他们是否运行正确，但更好的做法是我们一次运行一个进程，确保这个进程正确后运行下一个进程。
+13，不要编写 “防守型”程序
+     一个“防守型”的程序不相信输入到他们编写的系统的数据。通常来讲，我们不应该去检验输入的数据是否正确。系统编写的代码大多数情况是基于这样一个假设，输入到函数的数据是正确的。只有很少的一部分代码要检验输入数据的正确性。这通常发生在数据第一次进入系统的时候，一旦数据进入被检验为正确并进入系统，之后他们应该被视为正确的。例如：
+%% Args: Option is all|normal
+get_server_usage_info(Option, AsciiPid) ->
+  Pid = list_to_pid(AsciiPid),
+  case Option of
+    all -> get_all_info(Pid);
+    normal -> get_normal_info(Pid)
+  end.
+
+     一旦Option 不是 all 和 normal，这个函数将崩溃，这是我们应该要做的。调用者应该为正确的输入负责。
+14，隔离硬件接口和设备驱动
+     硬件应该被从使用的设备驱动系统隔离。设备驱动应该实现硬件接口，让硬件作为Erlang中的进程一样存在。硬件应该被实现为看起来并且行为也像正常的Erlang进程。硬件应该要好像能收发正常Erlang消息并且可以按传统的方式回复出现的错误。
+15，做和撤销一件事应该被放在同一个函数当中
+     假设我们要编写一个程序来打开一个文件，做完一些事情后我们应该在后面关闭它。像下面这样
+     do_something_with(File) -> 
+  case file:open(File, read) of, 
+    {ok, Stream} ->
+      doit(Stream), 
+      file:close(Stream) % The correct solution
+    Error -> Error
+  end.
+
+     注：打开、关闭文件应该保持对称，让它们在同一个程序当中。如果我们不遵守这个规定，那么会使得编程更复杂，因为我们没办法显而易见的确定文件是否被打开。不要尝试下面的编程：
+do_something_with(File) -> 
+  case file:open(File, read) of, 
+    {ok, Stream} ->
+      doit(Stream)
+    Error -> Error
+  end.
+
+doit(Stream) -> 
+  ...., 
+  func234(...,Stream,...).
+  ...
+
+func234(..., Stream, ...) ->
+  ...,
+  file:close(Stream) %% Don't do this
+
+
+
+三，错误处理
+1，分隔错误处理和正常情况的代码
+     不要混杂正常情况下的代码，这些代码应该尽可能只处理正常情况。如果代码在正常情况下发生错误时，你应该尽可能报告错误并且使程序崩溃掉。不要尝试解决错误并且继续。错误应该在其他进程被解决。
+     干净的分离错误恢复代码和正常代码，更好的简化整体系统设计。
+     当发生软件或者硬件错误时要生成错误日志，这些信息在接下来的诊断和改正错误阶段会被用到。
+     一个程序中，任何有帮助的信息应该被记录并保存。
+2，找出错误的内核（error kernel）（水平有限，只能这样翻译了，看后续解释）
+     对于设计系统，一个基本的步骤就是确定或找出系统一定要保证正确的部分和不需要一定保证正确的部分。
+     在传统的操作系统设计中，系统内核是被假定，并且一定是要，正确，这样，用户软件不需要一定是正确的。如果用户程序发生错误，这一定是被视作软件的错误，并且错误不能影响作为一个整体的系统的完整性。
+     系统设计的第一步一定是要找出系统一定要正确的部分，我们称这为  “error kernel”。通常这些 “error kernel”涉及存储硬件状态的实时内存数据库。
+
+
+
+四，进程，服务，消息
+1，在一个模块中实现一个进程
+     一个进程可以调用任何库程序，但是代码“最顶部”一环的进程应该只包含一个单一的模块，并且不应该把它分散到多个模块中。这不意味着你不能用通用的库程序，只是为了更好的控制。
+2，使用多进程去构建系统
+     但是当可以用调用函数代替时，不要用多进程和消息传递
+3，注册进程
+     注册进程名字应该注册为跟模块一样的名字，只有在进程需要长时间存在是才注册进程。
+4，准确的分配一个并行进程到其他每个正确的并行活动系统
+     当要决定是否要用并行或顺序构建一个涉及内部结构问题的东西时，需要考虑。一个主要规则是：
+     “用一个并行处理进程模拟现实世界的任何一个并行活动”。
+5，每个进程应该只有一个“角色”
+     不同的进程在系统中有不同的角色，例如客户-服务器模型。
+     其他角色，例如：
+     监督者：监视其他进程并且在他们推出时重启他们。
+     工人：正常的工作进程（可以有错误）
+     可信任的工人：不允许出错
+6，任何时候尽可能使用通用函数或者协议处理器
+7，给消息加标签
+     所有消息都要被标签。
+     不要这样编程：
+loop(State) ->
+  receive
+    ...
+    {Mod, Funcs, Args} -> % Don't do this
+      apply(Mod, Funcs, Args},
+      loop(State);
+    ...
+  end.
+
+     如果新消息{get_status_info,From,Option}放在{Mod,Func,Args}的后面会引入一个冲突。
+     如果消息是同步的，返回的消息应该被一个新的原子标记，用来描述返回的消息。例如：
+loop(State) ->
+  receive
+    ...
+    {execute, Mod, Funcs, Args} -> % Use a tagged message.
+      apply(Mod, Funcs, Args},
+      loop(State);
+    {get_status_info, From, Option} ->
+      From ! {status_info, get_status_info(Option, State)},
+      loop(State);    
+    ...
+  end.
+
+8，洗掉未知的消息
+     每个服务都应该有一个Other选项放在最后来接受状态，避免填满消息队列。例如：
+main_loop() ->
+  receive
+    {msg1, Msg1} -> 
+      ...,
+      main_loop();
+    {msg2, Msg2} ->
+      ...,
+      main_loop();
+    Other -> % Flushes the message queue.
+      error_logger:error_msg(
+          "Error: Process ~w got unknown msg ~w~n.", 
+          [self(), Other]),
+      main_loop()
+  end.
+
+9，编写尾递归服务
+     所有的服务必须是尾递归的，不然服务会消费内存知道用完。
+     不要这样编程：
+loop() ->
+  receive
+    {msg1, Msg1} -> 
+      ...,
+      loop();
+    stop ->
+      true;
+    Other ->
+      error_logger:log({error, {process_got_other, self(), Other}}),
+      loop()
+  end,
+  io:format("Server going down").                % Don't do this! 
+                % This is NOT tail-recursive
+
+     正确的做法：
+loop() ->
+  receive
+    {msg1, Msg1} -> 
+      ...,
+      loop();
+    stop ->
+      io:format("Server going down");
+    Other ->
+      error_logger:log({error, {process_got_other, self(), Other}}),
+      loop()
+  end. % This is tail-recursive
+
+     使用通用库可以帮你避免这个错误
+10，函数接口
+     任何时候尽可能使用函数接口，避免直接发送消息。
+     消息协议是内部信息，对其他模块来说应该被隐藏。例如：
+     -module(fileserver).
+-export([start/0, stop/0, open_file/1, ...]).
+
+open_file(FileName) ->
+  fileserver ! {open_file_request, FileName},
+  receive
+    {open_file_response, Result} -> Result
+  end.
+
+...<code>...
+
+11，超时
+     当在receive 部分后面时小心使用。
+12，捕获退出
+     尽可能减少进程捕获退出信号。
+
+
+五，各种Erlang相关规定
+1，使用记录作为构建数据的原则
+     记录是被标记的元组，使用记录可以保证不同模块之间数据结构的传递。
+2，使用选择器和构建器
+     例如：
+demo() ->
+  P = #person{name = "Joe", age = 29},
+  #person{name = Name1} = P,% Use matching, or...
+  Name2 = P#person.name. % use the selector like this.
+
+     不要这样做：
+demo() ->
+  P = #person{name = "Joe", age = 29},
+  {person, Name, _Age, _Phone, _Misc} = P. % Don't do this
+
+3，标记返回值
+     不要这样编程：
+keysearch(Key, [{Key, Value}|_Tail]) ->
+  Value; %% Don't return untagged values!
+keysearch(Key, [{_WrongKey, _WrongValue} | Tail]) ->
+  keysearch(Key, Tail);
+keysearch(Key, []) ->
+  false.
+
+     这样当值为 “false”是就会造成歧义，应该这样写：
+keysearch(Key, [{Key, Value}|_Tail]) ->
+  {value, Value}; %% Correct. Return a tagged value.
+keysearch(Key, [{_WrongKey, _WrongValue} | Tail]) ->
+  keysearch(Key, Tail);
+keysearch(Key, []) ->
+  false.
+
+4，十分小心的使用 catch 和 throw
+     不要使用catch 和 throw ，除非你十分清楚你要做什么。
+     catch 和 throw 在处理编译和输入时非常有用。
+5，十分小心的使用进程字典
+     不要使用get 和 put等，除非你清楚的知道你做什么。
+     一个使用进程字典的进程可以被新的参数重写。例如：
+tokenize([H|T]) ->
+  ...;
+tokenize([]) ->
+  case get_characters_from_device(get(device)) of % Don't use get/1!
+    eof -> [];
+    {value, Chars} ->
+      tokenize(Chars)
+  end.
+
+     正确的做法：
+tokenize(_Device, [H|T]) ->
+  ...;
+tokenize(Device, []) ->
+  case get_characters_from_device(Device) of     % This is better
+    eof -> [];
+    {value, Chars} ->
+      tokenize(Device, Chars)
+  end.
+
+     使用get 和put 将导致函数行为在不同场景相同输入下不确定。这使得代码难以阅读和产生不确定性。另外这会使得编译调试更加复杂。Erlang的运行时错误包括函数的参数，但是从来没有进程字典。
+
+6，不要使用 import
+     无法查看一个模块的函数会使得代码难以阅读。用交叉编译工具来查找依赖性。
+
+7，export 函数
+     确定需要export 一个函数的理由。例如：
+     a）这对于模块来说是一个用户接口
+     b）这是给其他模块的接口函数
+     c）它会被apply ，spawn等调用，并且只包含在他自己的模块内
+     使用不同的export组来表明他们不同的用途。例如：
+%% user interface
+-export([help/0, start/0, stop/0, info/1]).
+
+%% intermodule exports
+-export([make_pid/1, make_pid/3]).
+-export([process_abbrevs/0, print_info/5]).
+
+%% exports for use within module only
+-export([init/1, info_log_impl/1]).
+
+
+六，特殊的词汇和文体惯例
+1，不要写深层的嵌套的代码
+     影响可读性，尽量限制在两层嵌套内。
+2，不要写非常大的模块
+     不要超过400行，几个小的模块比一个大的模块更好
+3，不要写非常长的函数
+     尽量在15到20之间，也不要写非常长的一行代码
+4，不要写非常长的一行代码
+     尽量在80个字符以内。例如：
+io:format("Name: ~s, Age: ~w, Phone: ~w ~n" 
+      "Dictionary: ~w.~n", [Name, Age, Phone, Dict])
+
+5，变量命名
+     选择有意义的变量名字。当包含多个单词是使用“_"来分隔，避免使用”_“来表明不关心的变量，可以在变量前面加”_"来代替。例如：_Name.
+6，函数命名
+     不同模块解决同一个问题时，应该取同样的名字。
+7，模块命名
+8，以一个一致的方式编写格式化程序
+
+
+
+
+七，记录代码
+1，代码属性
+     你必须总是在模块头正确的写出所有代码的属性。说出所有对你模块有贡献的代码的出处和谁写的。
+     不要盗取代码
+     -revision('Revision: 1.14 ').
+-created('Date: 1995/01/01 11:21:11 ').
+-created_by('eklas@erlang').
+-modified('Date: 1995/01/05 13:04:07 ').
+-modified_by('mbj@erlang').
+
+2，提供代码的引用说明
+
+3，提供错误文档
+     所有的错误应该被放到一个英文写的文档中
+4，记录在消息中的所有原始数据结构
+5，注释
+     注释应该是干净和简洁，避免不必要的词汇，确保注释跟代码编写时一致，用英文
+6，每个函数都要注释
+     注释主要包括以下内容：
+     函数用途
+     有效输入域
+     输出域
+     如果函数有复杂的算法，解释它
+     说明不同的错误和退出信号
+     说明它的边缘影响
+     例如：
+%%----------------------------------------------------------------------
+%% Function: get_server_statistics/2
+%% Purpose: Get various information from a process.
+%% Args:   Option is normal|all.
+%% Returns: A list of {Key, Value} 
+%%     or {error, Reason} (if the process is dead)
+%%----------------------------------------------------------------------
+get_server_statistics(Option, Pid) when pid(Pid) ->
+
+7，数据结构
+     用一个版面来描述记录。例如：
+%% File: my_data_structures.h
+
+%%---------------------------------------------------------------------
+%% Data Type: person
+%% where:
+%%    name: A string (default is undefined).
+%%    age: An integer (default is undefined).
+%%    phone: A list of integers (default is []).
+%%    dict:     A dictionary containing various information about the person. 
+%%       A {Key, Value} list (default is the empty list).
+%%----------------------------------------------------------------------
+-record(person, {name, age, phone = [], dict = []}).
+
+8，文件头，版权
+     每个源代码文件都要有版权信息。例如：
+%%%--------------------------------------------------------------------- 
+%%% Copyright Ericsson Telecom AB 1996
+%%%
+%%% All rights reserved. No part of this computer programs(s) may be 
+%%% used, reproduced,stored in any retrieval system, or transmitted,
+%%% in any form or by any means, electronic, mechanical, photocopying,
+%%% recording, or otherwise without prior written permission of 
+%%% Ericsson Telecom AB.
+%%%--------------------------------------------------------------------- 
+
+9，文件头，修订历史
+     例如：
+%%%--------------------------------------------------------------------- 
+%%% Revision History
+%%%--------------------------------------------------------------------- 
+%%% Rev PA1 Date 960230 Author Fred Bloggs (ETXXXXX)
+%%% Intitial pre release. Functions for adding and deleting foobars
+%%% are incomplete
+%%%--------------------------------------------------------------------- 
+%%% Rev A Date 960230 Author Johanna Johansson (ETXYYY)
+%%% Added functions for adding and deleting foobars and changed 
+%%% data structures of foobars to allow for the needs of the Baz
+%%% signalling system
+%%%--------------------------------------------------------------------- 
+
+10，文件头，描述
+     描述模块包含的文件，和所有 export 的函数说明。例如：
+%%%--------------------------------------------------------------------- 
+%%% Description module foobar_data_manipulation
+%%%--------------------------------------------------------------------- 
+%%% Foobars are the basic elements in the Baz signalling system. The
+%%% functions below are for manipulating that data of foobars and for
+%%% etc etc etc
+%%%--------------------------------------------------------------------- 
+%%% Exports
+%%%--------------------------------------------------------------------- 
+%%% create_foobar(Parent, Type)
+%%%   returns a new foobar object
+%%%   etc etc etc
+%%%--------------------------------------------------------------------- 
+
+11，不要注释掉老代码---删除它
+     使用版本控制
+12，使用源代码的控制系统
+     例如：RCS，CVS 或者 Clearcase
+
+
+
+八，最常见的错误（包含在上述文档中）
+
+
+
+
+九，需要文档
+描述一些所需的系统级文档，并保持系统始终是Erlang编写
+1，模块描述
+2，消息描述
+3，进程
+4，错误信息
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+     
